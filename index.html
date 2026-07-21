@@ -191,7 +191,7 @@
       <label>Số điện thoại</label>
       <input id="custPhone" type="tel" placeholder="VD: 0987654321 hoặc +84987654321" oninput="updateShipInfo()" onblur="validatePhoneField()">
       <label>Địa chỉ giao hàng</label>
-      <textarea id="custAddress" rows="2" placeholder="Nhập số nhà và tên đường" oninput="updateShipInfo()"></textarea>
+      <textarea id="custAddress" rows="2" placeholder="Nhập số nhà và tên đường" oninput="onAddressInput()"></textarea>
 
       <label>Hình thức nhận hàng</label>
       <div class="delivery-mode-toggle" id="deliveryModeToggle">
@@ -509,7 +509,7 @@ function onDeliveryModeChange(){
   document.getElementById('deliveryModeShipLabel').classList.toggle('active', deliveryMode === 'ship');
   document.getElementById('deliveryModePickupLabel').classList.toggle('active', deliveryMode === 'pickup');
   document.getElementById('pickupNote').classList.toggle('hidden', deliveryMode !== 'pickup');
-  updateShipInfo();
+  requestShipQuote();
 }
 
 function renderTabs(){
@@ -618,7 +618,7 @@ function selectWard(name, zone){
   selectedWard = {name, zone};
   document.getElementById('wardInput').value = name;
   document.getElementById('wardList').classList.add('hidden');
-  updateShipInfo();
+  requestShipQuote();
 }
 document.addEventListener('click', (e) => {
   const combo = document.querySelector('.ward-combo');
@@ -650,28 +650,76 @@ function humanOrderCode(grandTotal){
   return `${prefix}-${nameCode}-${amountK}-${mm}`;
 }
 
+/* ========================= PHÍ SHIP THEO KHOẢNG CÁCH THỰC TẾ (Geocoding + Distance Matrix) =========================
+   Không gọi lại API mỗi lần render — chỉ gọi khi phường/địa chỉ thực sự đổi (so bằng shipQuoteKey),
+   kết quả lưu vào shipQuote rồi computeShipping() đọc lại (đồng bộ) từ đó. */
+let shipQuote = null;
+let shipQuoteKey = '';
+let shipQuoteLoading = false;
+const SHIP_FALLBACK_FEE = 20000; // dùng tạm nếu API lỗi/không gọi được, để không chặn đơn hoàn toàn
+
+function requestShipQuote(){
+  const address = document.getElementById('custAddress').value.trim();
+  if(isPickupMode()){
+    shipQuoteKey = 'pickup';
+    shipQuote = {ok:true, fee:0};
+    shipQuoteLoading = false;
+    updateShipInfo();
+    return;
+  }
+  if(!selectedWard || !address){
+    shipQuote = null; shipQuoteKey = '';
+    updateShipInfo();
+    return;
+  }
+  const key = address + '|||' + selectedWard.name;
+  if(key === shipQuoteKey && (shipQuote || shipQuoteLoading)) return; // đã gọi/đang gọi đúng địa chỉ này rồi
+
+  shipQuoteKey = key;
+  shipQuoteLoading = true;
+  shipQuote = null;
+  updateShipInfo();
+
+  const fullAddress = address + ', ' + selectedWard.name + ', TP.HCM';
+  fetch(GOOGLE_SHEET_WEBHOOK_URL + '?action=quote_ship&address=' + encodeURIComponent(fullAddress) + '&_=' + Date.now())
+    .then(r => r.json())
+    .then(data => {
+      if(key !== shipQuoteKey) return; // khách đã đổi địa chỉ trong lúc chờ - bỏ kết quả cũ, không ghi đè nhầm
+      shipQuoteLoading = false;
+      shipQuote = data.ok ? data : { ok:true, fee: SHIP_FALLBACK_FEE, fallback:true, fallbackReason: data.reason };
+      updateShipInfo();
+    })
+    .catch(() => {
+      if(key !== shipQuoteKey) return;
+      shipQuoteLoading = false;
+      shipQuote = { ok:true, fee: SHIP_FALLBACK_FEE, fallback:true };
+      updateShipInfo();
+    });
+}
+let addressDebounceTimer = null;
+function onAddressInput(){
+  clearTimeout(addressDebounceTimer);
+  addressDebounceTimer = setTimeout(requestShipQuote, 700); // chờ khách gõ xong ~0.7s mới gọi API, đỡ tốn lượt gọi
+}
+
 function computeShipping(refDate){
   const itemsTotal = cartTotal()*1000;
   if(!selectedWard) return {ok:false, needWard:true};
-  const zone = selectedWard.zone;
 
-  // Tự đến lấy: bỏ qua toàn bộ tính phí/zone/min-order theo khoảng cách -
-  // khách tự di chuyển nên khu vực xa cỡ nào cũng không ảnh hưởng, phí ship luôn = 0.
   if(isPickupMode()){
-    return {ok:true, zone, fee:0, peak:false, surcharge:0, itemsTotal, grandTotal: itemsTotal, pickup:true};
+    return {ok:true, fee:0, itemsTotal, grandTotal: itemsTotal, pickup:true};
   }
-
-  const fee = ZONE_FEE[zone];
-  if(fee === null){
-    return {ok:false, zone, reason:'Rất tiếc, khu vực này ở quá xa nên hiện Nhiên chưa thể giao đến. Bạn có thể chọn "Tự đến lấy" ở trên để không bị giới hạn khu vực.'};
+  if(shipQuoteLoading || !shipQuote){
+    return {ok:false, pending:true, reason:'Đang tính phí ship theo khoảng cách thực tế, vui lòng đợi vài giây...'};
   }
-  const minOrder = ZONE_MIN_ORDER[zone];
-  if(minOrder && itemsTotal < minOrder){
-    return {ok:false, zone, fee, minOrder, reason:'Khu vực này cần đơn tối thiểu ' + minOrder.toLocaleString('vi-VN') + 'đ (chưa gồm ship). Vui lòng thêm món để đủ điều kiện giao.'};
+  if(!shipQuote.ok){
+    return {ok:false, reason: shipQuote.reason || 'Không tính được phí ship cho địa chỉ này. Vui lòng kiểm tra lại địa chỉ.'};
   }
-  const peak = isPeakHour(refDate);
-  const surcharge = peak ? PEAK_SURCHARGE : 0;
-  return {ok:true, zone, fee, peak, surcharge, itemsTotal, grandTotal: itemsTotal + fee + surcharge, pickup:false};
+  const fee = shipQuote.fee;
+  return {
+    ok:true, fee, itemsTotal, grandTotal: itemsTotal + fee, pickup:false,
+    distanceText: shipQuote.distanceText, durationText: shipQuote.durationText, fallback: shipQuote.fallback
+  };
 }
 
 /* Tính toán cho đơn "Lưu đơn" (đặt lịch giao sau): kiểm tra ngày/giờ hợp lệ,
@@ -724,7 +772,7 @@ function computeSchedule(){
   const remainderAmount = r.grandTotal - depositAmount;
 
   return {
-    ok:true, zone:r.zone, fee:r.fee, peak:r.peak, surcharge:r.surcharge, itemsTotal:r.itemsTotal,
+    ok:true, fee:r.fee, itemsTotal:r.itemsTotal, distanceText:r.distanceText, durationText:r.durationText, fallback:r.fallback,
     grandTotal:r.grandTotal, schedDate, daysAhead, hoursAhead, isRush, isSameDay, depositRate, depositAmount, remainderAmount
   };
 }
@@ -834,10 +882,12 @@ function renderScheduleResult(s, infoEl, scheduleQrBox){
   infoEl.classList.remove('blocked');
   infoEl.classList.add('show');
   const rushLabel = s.isSameDay ? 'Đặt gấp (trong hôm nay) — cọc 100%' : (s.isRush ? 'Đặt gấp — cọc 100%' : 'Cọc 50% để giữ lịch');
+  const distRow = s.distanceText ? `<div class="row"><span>Khoảng cách ước tính</span><span>${s.distanceText} (~${s.durationText})</span></div>` : '';
+  const fallbackNote = s.fallback ? `<div class="row"><span colspan="2">⚠️ Không tính được khoảng cách thực tế, tạm áp dụng phí mặc định</span></div>` : '';
   infoEl.innerHTML = `
-    <div class="row"><span>Khu vực (${selectedWard.name})</span><span>${ZONE_LABEL[s.zone]}</span></div>
+    ${distRow}
     <div class="row"><span>Phí ship</span><span>${s.fee ? s.fee.toLocaleString('vi-VN') + 'đ' : 'Miễn phí (tự đến lấy)'}</span></div>
-    ${s.peak ? `<div class="row"><span>Phụ thu giờ cao điểm (giờ hẹn rơi vào 17h-19h)</span><span>+${s.surcharge.toLocaleString('vi-VN')}đ</span></div>` : ''}
+    ${fallbackNote}
     <div class="row grand"><span>Tổng bill</span><span>${s.grandTotal.toLocaleString('vi-VN')}đ</span></div>
     <div class="row"><span>${rushLabel}</span><span>${s.depositAmount.toLocaleString('vi-VN')}đ</span></div>
     ${!s.isRush ? `<div class="row"><span>Còn lại (thu khi ${word})</span><span>${s.remainderAmount.toLocaleString('vi-VN')}đ</span></div>` : ''}`;
@@ -1014,10 +1064,12 @@ function updateShipInfo(){
 
   infoEl.classList.remove('blocked');
   infoEl.classList.add('show');
+  const distRow = r.distanceText ? `<div class="row"><span>Khoảng cách ước tính</span><span>${r.distanceText} (~${r.durationText})</span></div>` : '';
+  const fallbackNote = r.fallback ? `<div class="row"><span>⚠️ Không tính được khoảng cách thực tế, tạm áp dụng phí mặc định</span></div>` : '';
   infoEl.innerHTML = `
-    <div class="row"><span>Vùng giao (${selectedWard.name})</span><span>${ZONE_LABEL[r.zone]}</span></div>
+    ${distRow}
     <div class="row"><span>Phí ship</span><span>${r.fee.toLocaleString('vi-VN')}đ</span></div>
-    ${r.peak ? `<div class="row"><span>Phụ thu giờ cao điểm (17h-19h)</span><span>+${r.surcharge.toLocaleString('vi-VN')}đ</span></div>` : ''}
+    ${fallbackNote}
     <div class="row grand"><span>Tổng thanh toán</span><span>${r.grandTotal.toLocaleString('vi-VN')}đ</span></div>`;
 
   qrBox.classList.remove('hidden');
@@ -1160,9 +1212,9 @@ async function submitOrder(){
       time: sheetTimeFormat(s.schedDate),       // giờ HẸN GIAO/LẤY - hiển thị chính trên trang barista
       placedAt: sheetTimeFormat(new Date()),    // giờ đặt đơn thực tế
       customerName: name, phone, address: fullAddress,
-      ward: selectedWard.name, zone: ZONE_LABEL[s.zone],
+      ward: selectedWard.name,
       isPickup: pickup, pickupTime: null,
-      itemsTotal: s.itemsTotal, shipFee: s.fee, peakSurcharge: s.surcharge,
+      itemsTotal: s.itemsTotal, shipFee: s.fee, peakSurcharge: 0,
       totalBill: s.grandTotal,
       depositAmount: s.depositAmount, remainderAmount: s.remainderAmount,
       depositPct: Math.round(s.depositRate*100),
@@ -1173,7 +1225,7 @@ async function submitOrder(){
     order = {
       orderId, orderCode, time: sheetTimeFormat(new Date()),
       customerName: name, phone, address: fullAddress,
-      ward: selectedWard.name, zone: ZONE_LABEL[r.zone],
+      ward: selectedWard.name,
       isPickup: true, pickupTime: pickupTime || null,
       itemsTotal: r.itemsTotal, shipFee: 0, peakSurcharge: 0,
       totalBill: r.grandTotal, status: 'MỚI'
@@ -1185,9 +1237,9 @@ async function submitOrder(){
       time: sheetTimeFormat(s.schedDate),       // giờ HẸN GIAO - hiển thị chính trên trang barista
       placedAt: sheetTimeFormat(new Date()),    // giờ đặt đơn thực tế
       customerName: name, phone, address: fullAddress,
-      ward: selectedWard.name, zone: ZONE_LABEL[s.zone],
+      ward: selectedWard.name,
       isPickup: false, pickupTime: null,
-      itemsTotal: s.itemsTotal, shipFee: s.fee, peakSurcharge: s.surcharge,
+      itemsTotal: s.itemsTotal, shipFee: s.fee, peakSurcharge: 0,
       totalBill: s.grandTotal,
       depositAmount: s.depositAmount, remainderAmount: s.remainderAmount,
       depositPct: Math.round(s.depositRate*100),
@@ -1198,9 +1250,9 @@ async function submitOrder(){
     order = {
       orderId, orderCode, time: sheetTimeFormat(new Date()),
       customerName: name, phone, address: fullAddress,
-      ward: selectedWard.name, zone: ZONE_LABEL[r.zone],
+      ward: selectedWard.name,
       isPickup: false, pickupTime: null,
-      itemsTotal: r.itemsTotal, shipFee: r.fee, peakSurcharge: r.surcharge,
+      itemsTotal: r.itemsTotal, shipFee: r.fee, peakSurcharge: 0,
       totalBill: r.grandTotal, status: 'MỚI'
     };
   }
