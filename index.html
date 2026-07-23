@@ -151,6 +151,9 @@
   .pickup-time-box.hidden{display:none;}
   .pickup-time-box .hint{font-size:11.5px;color:var(--color-text-muted);margin-top:4px;}
   .bulk-schedule-notice{margin-top:10px;padding:14px 16px;border-radius:var(--radius);background:var(--color-primary-light);border:1px solid var(--color-primary);}
+  .after-hours-notice{margin-top:12px;padding:12px 14px;border-radius:12px;background:var(--color-new);border:1px solid var(--color-new-border);font-size:13px;color:var(--color-text);line-height:1.5;}
+  .after-hours-notice.hidden{display:none;}
+  .after-hours-notice a{color:var(--color-primary);font-weight:700;text-decoration:none;}
   .bulk-schedule-notice.hidden{display:none;}
   .bulk-schedule-notice .bulk-title{font-weight:700;color:var(--color-primary);font-size:15px;margin-bottom:6px;}
   .bulk-schedule-notice p{font-size:13px;color:var(--color-text);margin:0;}
@@ -186,6 +189,11 @@
       <h2>Đơn của bạn</h2>
       <div id="cartLines"></div>
       <div class="cart-total-row"><span>Tổng cộng</span><span id="sheetTotal">0đ</span></div>
+
+      <div class="after-hours-notice hidden" id="afterHoursNotice">
+        Cảm ơn bạn đã đặt món, hiện tại Nhiên đã hết giờ hoạt động, bạn vui lòng chọn "Lưu Đơn" rồi gửi đơn hàng nhé. Nếu cần gấp, hãy liên hệ hotline <a href="tel:0938519928">0938 519 928</a>.
+      </div>
+
       <label>Tên khách</label>
       <input id="custName" placeholder="Vui lòng nhập ít nhất 2 chữ trong tên" oninput="updateShipInfo()">
       <label>Số điện thoại</label>
@@ -313,15 +321,6 @@
       <p style="font-size:11.5px;color:var(--color-text-muted);margin:8px 0 0;">Lưu link này lại để xem tình trạng đơn bất cứ lúc nào</p>
 
       <button class="btn-secondary" onclick="resetForNewOrder()">Đặt thêm đơn khác</button>
-    </div>
-  </div>
-
-  <div class="overlay hidden" id="shopClosedOverlay">
-    <div class="sheet confirm-screen">
-      <div class="check">🕗</div>
-      <h2>Nhiên hiện đang đóng cửa</h2>
-      <p>Giờ nhận đơn: <strong>8:00 - 20:00</strong> hàng ngày. Bạn quay lại trong giờ mở cửa để đặt món nhé!</p>
-      <p style="margin-top:10px;">Cần liên hệ gấp? Gọi <a href="tel:0938519928" style="color:var(--color-primary);font-weight:700;">0938 519 928</a></p>
     </div>
   </div>
 
@@ -568,25 +567,16 @@ function isShopOpenNow(){
   return h >= SHOP_OPEN_HOUR && h < SHOP_CLOSE_HOUR;
 }
 function updateShopOpenBanner(){
-  const cartBar = document.getElementById('cartBar');
-  const closedOverlay = document.getElementById('shopClosedOverlay');
-  if(!isShopOpenNow()){
-    if(!document.getElementById('cartOverlay').classList.contains('hidden')){
-      document.getElementById('cartOverlay').classList.add('hidden');
-      closedOverlay.classList.remove('hidden');
-    }
-    cartBar.style.opacity = '0.55';
-  }else{
-    cartBar.style.opacity = '1';
+  // Không chặn giỏ hàng nữa - ngoài giờ hoạt động vẫn cho đặt, chỉ bắt buộc Lưu Đơn
+  // (xử lý trong updateShipInfo). Hàm này chỉ để tự làm mới nếu trạng thái giờ đổi
+  // trong lúc khách đang mở sẵn màn hình đặt hàng.
+  if(!document.getElementById('cartOverlay').classList.contains('hidden')){
+    updateShipInfo();
   }
 }
 setInterval(updateShopOpenBanner, 60000);
 
 function openCart(){
-  if(!isShopOpenNow()){
-    document.getElementById('shopClosedOverlay').classList.remove('hidden');
-    return;
-  }
   const lines = cartArray();
   document.getElementById('cartLines').innerHTML = lines.map(l => `
     <div class="cart-line"><span>${l.name} <span class="meta">(${l.size}) x${l.qty}</span></span><span>${fmt(l.price*l.qty)}</span></div>`).join('');
@@ -744,7 +734,10 @@ function computeSchedule(){
   if(daysAhead < 0){
     return {ok:false, reason:'Giờ hẹn ' + word + ' đã qua, vui lòng chọn lại.'};
   }
-  if(daysAhead === 0 && hoursAhead < SCHEDULE_SAMEDAY_MIN_HOURS){
+
+  const afterHours = !isShopOpenNow();
+
+  if(!afterHours && daysAhead === 0 && hoursAhead < SCHEDULE_SAMEDAY_MIN_HOURS){
     return {ok:false, reason:'Hẹn ' + word + ' trong hôm nay cần đặt trước tối thiểu ' + SCHEDULE_SAMEDAY_MIN_HOURS + ' tiếng so với giờ hiện tại.'};
   }
 
@@ -756,24 +749,28 @@ function computeSchedule(){
   const isSameDay = daysAhead === 0;
   const maxDays = r.grandTotal >= SCHEDULE_EXTENDED_MIN_TOTAL ? SCHEDULE_EXTENDED_MAX_DAYS : SCHEDULE_NORMAL_MAX_DAYS;
 
-  if(!isRush && daysAhead < SCHEDULE_NORMAL_MIN_DAYS){
-    return {ok:false, reason:'Đặt lịch thường cần cách tối thiểu ' + SCHEDULE_NORMAL_MIN_DAYS + ' ngày. Muốn ' + word + ' sớm hơn, chọn trong hôm nay hoặc trong ' + SCHEDULE_RUSH_MAX_DAYS + ' ngày tới (đặt gấp, cọc 100%).'};
-  }
-  if(daysAhead > maxDays){
-    return {ok:false, reason:'Chỉ nhận đặt lịch tối đa ' + maxDays + ' ngày tới' + (maxDays === SCHEDULE_NORMAL_MAX_DAYS ? ' (đơn từ ' + SCHEDULE_EXTENDED_MIN_TOTAL.toLocaleString('vi-VN') + 'đ được đặt xa hơn, tối đa ' + SCHEDULE_EXTENDED_MAX_DAYS + ' ngày).' : '.')};
-  }
-  // Đơn số lượng lớn: đặt lịch là bắt buộc nên bỏ qua ngưỡng đơn tối thiểu (áp dụng cho đơn thường, tùy chọn).
-  if(!isBulkOrder() && r.grandTotal < SCHEDULE_MIN_ORDER){
-    return {ok:false, reason:'Đặt lịch ' + word + ' sau chỉ áp dụng cho đơn từ ' + SCHEDULE_MIN_ORDER.toLocaleString('vi-VN') + 'đ trở lên (đã gồm ship).'};
+  // Đặt ngoài giờ hoạt động: bỏ hết mọi giới hạn lead-time/đơn tối thiểu bên dưới,
+  // luôn thu đủ 100% (xử lý ở dòng tính depositRate).
+  if(!afterHours){
+    if(!isRush && daysAhead < SCHEDULE_NORMAL_MIN_DAYS){
+      return {ok:false, reason:'Đặt lịch thường cần cách tối thiểu ' + SCHEDULE_NORMAL_MIN_DAYS + ' ngày. Muốn ' + word + ' sớm hơn, chọn trong hôm nay hoặc trong ' + SCHEDULE_RUSH_MAX_DAYS + ' ngày tới (đặt gấp, cọc 100%).'};
+    }
+    if(daysAhead > maxDays){
+      return {ok:false, reason:'Chỉ nhận đặt lịch tối đa ' + maxDays + ' ngày tới' + (maxDays === SCHEDULE_NORMAL_MAX_DAYS ? ' (đơn từ ' + SCHEDULE_EXTENDED_MIN_TOTAL.toLocaleString('vi-VN') + 'đ được đặt xa hơn, tối đa ' + SCHEDULE_EXTENDED_MAX_DAYS + ' ngày).' : '.')};
+    }
+    // Đơn số lượng lớn: đặt lịch là bắt buộc nên bỏ qua ngưỡng đơn tối thiểu (áp dụng cho đơn thường, tùy chọn).
+    if(!isBulkOrder() && r.grandTotal < SCHEDULE_MIN_ORDER){
+      return {ok:false, reason:'Đặt lịch ' + word + ' sau chỉ áp dụng cho đơn từ ' + SCHEDULE_MIN_ORDER.toLocaleString('vi-VN') + 'đ trở lên (đã gồm ship).'};
+    }
   }
 
-  const depositRate = isRush ? SCHEDULE_RUSH_DEPOSIT_RATE : SCHEDULE_NORMAL_DEPOSIT_RATE;
+  const depositRate = afterHours ? 1 : (isRush ? SCHEDULE_RUSH_DEPOSIT_RATE : SCHEDULE_NORMAL_DEPOSIT_RATE);
   const depositAmount = Math.round(r.grandTotal * depositRate);
   const remainderAmount = r.grandTotal - depositAmount;
 
   return {
     ok:true, fee:r.fee, itemsTotal:r.itemsTotal, distanceText:r.distanceText, durationText:r.durationText, fallback:r.fallback,
-    grandTotal:r.grandTotal, schedDate, daysAhead, hoursAhead, isRush, isSameDay, depositRate, depositAmount, remainderAmount
+    grandTotal:r.grandTotal, schedDate, daysAhead, hoursAhead, isRush, isSameDay, afterHours, depositRate, depositAmount, remainderAmount
   };
 }
 
@@ -881,7 +878,7 @@ function renderScheduleResult(s, infoEl, scheduleQrBox){
   const word = scheduleActionWord();
   infoEl.classList.remove('blocked');
   infoEl.classList.add('show');
-  const rushLabel = s.isSameDay ? 'Đặt gấp (trong hôm nay) — cọc 100%' : (s.isRush ? 'Đặt gấp — cọc 100%' : 'Cọc 50% để giữ lịch');
+  const rushLabel = s.afterHours ? 'Thanh toán trước' : (s.isSameDay ? 'Đặt gấp (trong hôm nay) — cọc 100%' : (s.isRush ? 'Đặt gấp — cọc 100%' : 'Cọc 50% để giữ lịch'));
   const distRow = s.distanceText ? `<div class="row"><span>Khoảng cách ước tính</span><span>${s.distanceText} (~${s.durationText})</span></div>` : '';
   const fallbackNote = s.fallback ? `<div class="row"><span colspan="2">⚠️ Không tính được khoảng cách thực tế, tạm áp dụng phí mặc định</span></div>` : '';
   infoEl.innerHTML = `
@@ -890,7 +887,7 @@ function renderScheduleResult(s, infoEl, scheduleQrBox){
     ${fallbackNote}
     <div class="row grand"><span>Tổng bill</span><span>${s.grandTotal.toLocaleString('vi-VN')}đ</span></div>
     <div class="row"><span>${rushLabel}</span><span>${s.depositAmount.toLocaleString('vi-VN')}đ</span></div>
-    ${!s.isRush ? `<div class="row"><span>Còn lại (thu khi ${word})</span><span>${s.remainderAmount.toLocaleString('vi-VN')}đ</span></div>` : ''}`;
+    ${s.remainderAmount > 0 ? `<div class="row"><span>Còn lại (thu khi ${word})</span><span>${s.remainderAmount.toLocaleString('vi-VN')}đ</span></div>` : ''}`;
 
   scheduleQrBox.classList.remove('hidden');
   const orderCode = humanOrderCode(s.grandTotal) || ('DH' + currentOrderRef.slice(-8));
@@ -903,7 +900,7 @@ function renderScheduleResult(s, infoEl, scheduleQrBox){
 
   const remainderBlock = document.getElementById('remainderBlock');
   const remainderInner = document.getElementById('remainderBlockInner');
-  if(s.isRush){
+  if(s.remainderAmount <= 0){
     remainderBlock.classList.add('hidden');
     remainderInner.classList.add('hidden');
   }else{
@@ -934,7 +931,42 @@ function updateShipInfo(){
   document.getElementById('schedWordQr').textContent = word;
   document.getElementById('bulkActionWord').textContent = word;
 
+  const afterHoursNotice = document.getElementById('afterHoursNotice');
+  const afterHours = !isShopOpenNow();
   const bulk = isBulkOrder();
+
+  // ========== NGOÀI GIỜ HOẠT ĐỘNG (8h-20h) ==========
+  // Ưu tiên cao nhất, áp dụng bất kể đơn thường/lớn/tự lấy: bắt buộc Lưu Đơn,
+  // không giới hạn lead-time/đơn tối thiểu gì cả, luôn thu đủ 100% (xử lý trong computeSchedule).
+  if(afterHours){
+    afterHoursNotice.classList.remove('hidden');
+    pickupTimeBox.classList.add('hidden');
+    toggleWrap.classList.add('hidden');
+    bulkEl.classList.add('hidden');
+    qrBox.classList.add('hidden');
+    hasPaid = false;
+    document.getElementById('paidCheck').checked = false;
+    toggleNote.textContent = '';
+
+    scheduleMode = true;
+    document.getElementById('scheduleBox').classList.remove('hidden');
+    populateScheduleOptions();
+
+    const s = computeSchedule();
+    if(!s.ok){
+      infoEl.classList.add('show', 'blocked');
+      infoEl.innerHTML = `<div class="row">${s.reason}</div>`;
+      scheduleQrBox.classList.add('hidden');
+      document.getElementById('scheduleCheck').checked = false;
+      scheduleConfirmed = false;
+      submitBtn.disabled = true;
+      return;
+    }
+    renderScheduleResult(s, infoEl, scheduleQrBox);
+    submitBtn.disabled = !scheduleConfirmed;
+    return;
+  }
+  afterHoursNotice.classList.add('hidden');
 
   // ========== ĐƠN SỐ LƯỢNG LỚN (ship hoặc pickup đều vậy) ==========
   // Bắt buộc Lưu đơn - không còn luồng "gọi ngay/nhắn Zalo".
@@ -1122,17 +1154,13 @@ function sendToSheet(payload){
 }
 
 async function submitOrder(){
-  if(!isShopOpenNow()){
-    document.getElementById('cartOverlay').classList.add('hidden');
-    document.getElementById('shopClosedOverlay').classList.remove('hidden');
-    return;
-  }
   const name = document.getElementById('custName').value.trim();
   const phone = document.getElementById('custPhone').value.trim();
   const address = document.getElementById('custAddress').value.trim();
   const errEl = document.getElementById('formError');
   const bulk = isBulkOrder();
   const pickup = isPickupMode();
+  const afterHours = !isShopOpenNow();
 
   if(!name || name.length < 2 || !address || !selectedWard){
     errEl.textContent = 'Vui lòng điền đầy đủ tên, địa chỉ và chọn phường.';
@@ -1147,8 +1175,9 @@ async function submitOrder(){
   }
 
   let r = null, s = null;
-  if(bulk){
-    // Đơn số lượng lớn: Lưu đơn LUÔN bắt buộc (dù ship hay tự đến lấy) - không còn nhánh liên hệ thủ công.
+  if(bulk || afterHours){
+    // Đơn số lượng lớn HOẶC đặt ngoài giờ hoạt động: Lưu đơn LUÔN bắt buộc
+    // (dù ship hay tự đến lấy) - không còn nhánh liên hệ thủ công.
     s = computeSchedule();
     if(!s.ok){
       errEl.textContent = s.reason || 'Thông tin đặt lịch chưa hợp lệ.';
@@ -1205,7 +1234,7 @@ async function submitOrder(){
   }));
 
   let order, orderCode;
-  if(bulk){
+  if(bulk || afterHours){
     orderCode = humanOrderCode(s.grandTotal);
     order = {
       orderId, orderCode,
